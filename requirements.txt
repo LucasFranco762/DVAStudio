@@ -1,4 +1,4 @@
-PyQt6==6.7.1
-PyQt6-WebEngine==6.7.0
+PyQt6==6.12.1
+PyQt6-WebEngine==6.140.1
 yt-dlp[default]>=2026.10.26
 imageio-ffmpeg>=0.5.1

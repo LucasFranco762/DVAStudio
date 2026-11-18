@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
 from pathlib import Path
 
+from ..core.browser_runtime import configure_webengine
+
+configure_webengine()
+
 from PyQt6.QtCore import QSettings, QSize, QThread, Qt, QUrl, pyqtSlot
-from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -29,12 +34,13 @@ from PyQt6.QtWidgets import (
 )
 
 try:
-    from PyQt6.QtWebEngineCore import QWebEnginePage
+    from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 except Exception:  # pragma: no cover
     QWebEngineView = None
 
-from ..core.downloader import DownloadRequest, DownloadWorker
+from ..core.downloader import DownloadRequest, DownloadWorker, MediaInfoWorker
+from .save_dialog import DownloadSaveDialog
 
 
 def _back_icon() -> QIcon:
@@ -65,9 +71,12 @@ def _back_icon() -> QIcon:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#070A16"))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
         self.setWindowTitle("DVA Studio Desktop")
         self.resize(1280, 820)
-        self.showMaximized()
         config_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "DVAStudio"
         config_dir.mkdir(parents=True, exist_ok=True)
         self._settings = QSettings(
@@ -77,7 +86,11 @@ class MainWindow(QMainWindow):
         self.download_dir = Path(self._settings.value("download_dir", default_dir))
         self._thread: QThread | None = None
         self._worker: DownloadWorker | None = None
-        self._save_dialog: QFileDialog | None = None
+        self._save_dialog: DownloadSaveDialog | None = None
+        self._metadata_jobs: dict[QThread, MediaInfoWorker] = {}
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._stop_metadata_workers)
         self._build_ui()
         self._load_downloads()
 
@@ -225,12 +238,26 @@ class MainWindow(QMainWindow):
 
         if QWebEngineView:
             self.web = QWebEngineView()
+            browser_palette = self.web.palette()
+            browser_palette.setColor(QPalette.ColorRole.Window, QColor("#0D1024"))
+            browser_palette.setColor(QPalette.ColorRole.Base, QColor("#0D1024"))
+            self.web.setPalette(browser_palette)
+            self.web.setAutoFillBackground(True)
+            # Usa a política de mídia de um navegador desktop. O padrão do Qt
+            # pode exigir um novo gesto quando o site troca/recria o player.
+            self.web.settings().setAttribute(
+                QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False
+            )
+            browser_page = self.web.page()
+            if browser_page is not None:
+                browser_page.setBackgroundColor(QColor("#0D1024"))
+                browser_page.renderProcessTerminated.connect(self._on_browser_renderer_terminated)
             back_action = self.web.pageAction(QWebEnginePage.WebAction.Back)
             if back_action is not None:
                 self.btn_back.clicked.connect(back_action.trigger)
                 back_action.changed.connect(lambda: self.btn_back.setEnabled(back_action.isEnabled()))
                 self.btn_back.setEnabled(back_action.isEnabled())
-            self.web.setUrl(QUrl("https://m.youtube.com"))
+            self.web.setUrl(QUrl("https://www.youtube.com"))
             self.web.urlChanged.connect(lambda url: self.url_edit.setText(url.toString()))
             layout.addWidget(self.web, 1)
         else:
@@ -311,6 +338,14 @@ class MainWindow(QMainWindow):
             self.web.setUrl(QUrl(text))
         self.url_edit.setText(text)
 
+    def _on_browser_renderer_terminated(self, termination_status, exit_code: int) -> None:
+        reason = getattr(termination_status, "name", str(termination_status))
+        logging.getLogger(__name__).error(
+            "O renderizador do navegador foi encerrado: %s (código %s).", reason, exit_code
+        )
+        # Não recarrega automaticamente: isso reiniciaria o vídeo em andamento.
+        self.status.setText("O navegador encontrou uma falha de renderização. Consulte o console.")
+
     def _start_download(self) -> None:
         url = self.url_edit.text().strip()
         if not url.startswith(("http://", "https://")):
@@ -332,23 +367,41 @@ class MainWindow(QMainWindow):
             output_dir=self.download_dir,
             output_format=output_fmt,
         )
-        dialog = QFileDialog(self)
-        # O seletor nativo do Windows interrompe os timers do Qt. show()
-        # mantém o loop principal e o navegador ativos, sem um exec() aninhado.
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setWindowTitle("Salvar arquivo como")
-        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
-        dialog.setNameFilter(f"*.{output_fmt}")
-        dialog.setDefaultSuffix(output_fmt)
-        dialog.setDirectory(str(self.download_dir))
-        dialog.selectFile(f"download.{output_fmt}")
-        dialog.setWindowModality(Qt.WindowModality.NonModal)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog = DownloadSaveDialog(self, str(self.download_dir), output_fmt, request.mode)
         dialog.fileSelected.connect(lambda filename: self._download_selected_file(filename, request))
         dialog.finished.connect(self._clear_save_dialog)
         self._save_dialog = dialog
         dialog.show()
+        self._fetch_original_name(request.url, dialog)
+
+    def _fetch_original_name(self, url: str, dialog: DownloadSaveDialog) -> None:
+        thread = QThread(self)
+        worker = MediaInfoWorker(url)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.title_ready.connect(dialog.set_original_name, Qt.ConnectionType.QueuedConnection)
+        worker.failed.connect(dialog.name_unavailable, Qt.ConnectionType.QueuedConnection)
+        worker.done.connect(thread.quit, Qt.ConnectionType.DirectConnection)
+        dialog.finished.connect(worker.cancel, Qt.ConnectionType.DirectConnection)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_metadata_worker)
+        thread.finished.connect(thread.deleteLater)
+        self._metadata_jobs[thread] = worker
+        thread.start()
+
+    @pyqtSlot()
+    def _cleanup_metadata_worker(self) -> None:
+        thread = self.sender()
+        if isinstance(thread, QThread):
+            self._metadata_jobs.pop(thread, None)
+
+    @pyqtSlot()
+    def _stop_metadata_workers(self) -> None:
+        for thread, worker in list(self._metadata_jobs.items()):
+            worker.cancel()
+            thread.quit()
+        for thread in list(self._metadata_jobs):
+            thread.wait()
 
     @pyqtSlot(int)
     def _clear_save_dialog(self, result: int) -> None:
@@ -398,6 +451,7 @@ class MainWindow(QMainWindow):
             kind = "Vídeo + Áudio"
         dlg = QDialog(self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         dlg.setWindowModality(Qt.WindowModality.NonModal)
         dlg.setWindowTitle("Download concluído")
         dlg.setFixedWidth(380)
@@ -431,6 +485,7 @@ class MainWindow(QMainWindow):
     def _show_message(self, icon: QMessageBox.Icon, title: str, message: str) -> None:
         dialog = QMessageBox(icon, title, message, QMessageBox.StandardButton.Ok, self)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.show()
 

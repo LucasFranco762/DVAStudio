@@ -35,6 +35,18 @@ python main.py
 
 ## Downloads de áudio e vídeo
 
+O navegador integrado usa a página desktop do YouTube e a política de reprodução
+desktop do WebEngine. No Windows, a composição usa software para evitar falhas
+de compartilhamento de texturas D3D/Skia que podem deixar a página preta.
+As janelas de conclusão são exibidas sem tomar o foco do player.
+
+Para testar a reprodução até o fim com download simultâneo, usando vídeo local
+e verificando também a imagem exibida e a pausa manual:
+
+```powershell
+.venv\Scripts\python.exe tests/verify_video_playback.py
+```
+
 O FFmpeg para conversão e mesclagem já acompanha o pacote `imageio-ffmpeg`.
 Para baixar do YouTube, instale [Deno](https://deno.com/) (2.3 ou superior)
 ou [Node.js](https://nodejs.org/) (22 ou superior) e deixe-o no PATH.

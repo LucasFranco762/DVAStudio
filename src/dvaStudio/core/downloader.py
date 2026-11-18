@@ -69,6 +69,63 @@ class _DownloadLogger:
         pass
 
 
+class MediaInfoWorker(QObject):
+    """Consulta somente o título, sem baixar a mídia nem bloquear a interface."""
+
+    title_ready = pyqtSignal(str)
+    failed = pyqtSignal(str)
+    done = pyqtSignal()
+
+    def __init__(self, url: str):
+        super().__init__()
+        self.url = url
+        self._cancelled = False
+
+    @pyqtSlot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @pyqtSlot()
+    def run(self) -> None:
+        try:
+            if self._cancelled:
+                return
+            import yt_dlp
+            from yt_dlp.utils import sanitize_filename
+
+            worker = self
+
+            class Logger(_DownloadLogger):
+                def debug(self, message: str) -> None:
+                    if worker._cancelled:
+                        raise RuntimeError("Consulta cancelada.")
+
+            with yt_dlp.YoutubeDL({
+                "quiet": True, "logger": Logger(), "noplaylist": True,
+                "skip_download": True, "socket_timeout": 5,
+                "retries": 0, "extractor_retries": 0,
+                "js_runtimes": _get_js_runtimes(),
+            }) as ydl:
+                info = ydl.extract_info(self.url, download=False)
+            if self._cancelled:
+                return
+            title = info.get("title") if isinstance(info, dict) else None
+            if not title:
+                raise RuntimeError("Título original indisponível.")
+            name = sanitize_filename(str(title), restricted=False, is_id=False)[:180].rstrip(" .")
+            if not name:
+                raise RuntimeError("Título original indisponível.")
+            reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+            if name.split(".")[0].upper() in reserved:
+                name = "_" + name
+            self.title_ready.emit(name)
+        except Exception as exc:
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+        finally:
+            self.done.emit()
+
+
 class DownloadWorker(QObject):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(str, str)

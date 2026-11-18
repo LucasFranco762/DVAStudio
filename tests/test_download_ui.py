@@ -3,13 +3,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PyQt6.QtCore import QSettings, QThread, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QWidget
+from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QLineEdit, QWidget
 
-from src.dvaStudio.core.downloader import DownloadWorker
+from src.dvaStudio.core.downloader import DownloadWorker, MediaInfoWorker
 from src.dvaStudio.ui import main_window
 
 
@@ -20,6 +20,14 @@ class BrowserStub(QWidget):
         super().__init__()
         self.back_action = QAction(self)
         self.back_action.setEnabled(False)
+        self.web_settings = MagicMock()
+        self.browser_page = MagicMock()
+
+    def settings(self):
+        return self.web_settings
+
+    def page(self):
+        return self.browser_page
 
     def pageAction(self, action):
         return self.back_action
@@ -44,6 +52,18 @@ class SlowWorker(DownloadWorker):
         self.finished.emit(str(path), "teste")
 
 
+class SlowInfoWorker(MediaInfoWorker):
+    thread_id = None
+
+    @pyqtSlot()
+    def run(self):
+        type(self).thread_id = int(QThread.currentThreadId())
+        time.sleep(0.15)
+        if not self._cancelled:
+            self.title_ready.emit("Título original")
+        self.done.emit()
+
+
 class DownloadUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -65,15 +85,19 @@ class DownloadUiTests(unittest.TestCase):
             self.window = main_window.MainWindow()
         self.window.url_edit.setText("https://example.com/original")
         self.window.mode_combo.setCurrentIndex(1)
+        self.metadata_patch = patch.object(self.window, "_fetch_original_name")
+        self.metadata_patch.start()
 
     def tearDown(self):
         if self.window._save_dialog is not None:
             self.window._save_dialog.reject()
+        self.window._stop_metadata_workers()
         for dialog in self.window.findChildren(QDialog):
             dialog.close()
         self.window.close()
         self.app.processEvents()
         self.env.stop()
+        self.metadata_patch.stop()
         self.tmp.cleanup()
 
     def pump_until(self, predicate, timeout=5):
@@ -135,6 +159,53 @@ class DownloadUiTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(self.window.web.isEnabled())
         self.assertTrue(all(not dialog.isModal() for dialog in self.window.findChildren(QDialog)))
+
+    def test_portuguese_dialog_prefills_original_name_and_preserves_edits(self):
+        self.window._start_download()
+        dialog = self.window._save_dialog
+        self.assertEqual(dialog.labelText(QFileDialog.DialogLabel.Accept), "Salvar")
+        self.assertEqual(dialog.labelText(QFileDialog.DialogLabel.Reject), "Cancelar")
+        self.assertEqual(dialog.labelText(QFileDialog.DialogLabel.LookIn), "Salvar em:")
+        self.assertEqual(dialog.labelText(QFileDialog.DialogLabel.FileName), "Nome do arquivo:")
+        self.assertEqual(self.app.translate("QFileSystemModel", "Name"), "Nome")
+        editor = dialog.findChild(QLineEdit, "fileNameEdit")
+        dialog.set_original_name("Alok - Hear Me Now")
+        self.assertEqual(editor.text(), "Alok - Hear Me Now.mp3")
+        editor.setText("Minha música.mp3")
+        editor.textEdited.emit("Minha música.mp3")
+        dialog.set_original_name("Outro nome")
+        self.assertEqual(editor.text(), "Minha música.mp3")
+
+    def test_name_lookup_is_background_and_cancelled_results_do_not_change_new_dialog(self):
+        self.window._start_download()
+        dialog = self.window._save_dialog
+        ticks = []
+        timer = QTimer()
+        timer.timeout.connect(lambda: ticks.append(True))
+        timer.start(10)
+        with patch.object(main_window, "MediaInfoWorker", SlowInfoWorker):
+            main_window.MainWindow._fetch_original_name(self.window, "https://example.com/music", dialog)
+        self.pump_until(lambda: not self.window._metadata_jobs)
+        timer.stop()
+        self.assertGreaterEqual(len(ticks), 3)
+        self.assertNotEqual(SlowInfoWorker.thread_id, int(QThread.currentThreadId()))
+        self.assertEqual(dialog.findChild(QLineEdit, "fileNameEdit").text(), "Título original.mp3")
+        dialog.reject()
+        self.window._start_download()
+        old_dialog = self.window._save_dialog
+        with patch.object(main_window, "MediaInfoWorker", SlowInfoWorker):
+            main_window.MainWindow._fetch_original_name(self.window, "https://example.com/music", old_dialog)
+        old_dialog.reject()
+        self.window._start_download()
+        new_dialog = self.window._save_dialog
+        self.pump_until(lambda: not self.window._metadata_jobs)
+        self.assertEqual(new_dialog.findChild(QLineEdit, "fileNameEdit").text(), "download.mp3")
+
+    def test_original_name_does_not_duplicate_extension(self):
+        self.window._start_download()
+        dialog = self.window._save_dialog
+        dialog.set_original_name("Música.MP3")
+        self.assertEqual(dialog.findChild(QLineEdit, "fileNameEdit").text(), "Música.mp3")
 
 
 if __name__ == "__main__":

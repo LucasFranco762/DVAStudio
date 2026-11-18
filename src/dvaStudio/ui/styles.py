@@ -1,11 +1,16 @@
 APP_QSS = """
 * { font-family: 'Segoe UI', 'Inter', Arial; color: #F7F8FF; }
 QMainWindow { background: #070A16; }
+QDialog { background: #0D1024; }
 QMessageBox { background: #0D1024; }
 QMessageBox QLabel { color: #F7F8FF; }
 QFileDialog { background: #0D1024; }
 QFileDialog QTreeView, QFileDialog QListView { background: #0D1024; color: #F7F8FF; selection-background-color: #8F3DFF; selection-color: white; }
 QFileDialog QHeaderView::section { background: #1B2140; color: #F7F8FF; }
+QFileDialog QHeaderView { background: #1B2140; }
+QFileDialog QToolButton { background: rgba(255,255,255,0.06); color: #F7F8FF; border: 1px solid rgba(255,255,255,0.10); border-radius: 8px; padding: 6px; }
+QFileDialog QToolButton:hover { background: rgba(32,227,255,0.14); border-color: rgba(32,227,255,0.38); }
+QFileDialog QToolButton:disabled { color: #626980; background: transparent; }
 QWidget#Root { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #070A16, stop:0.55 #0D1024, stop:1 #130B22); }
 QFrame#Sidebar { background: rgba(255,255,255,0.055); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; }
 QFrame#Card { background: rgba(255,255,255,0.075); border: 1px solid rgba(255,255,255,0.10); border-radius: 22px; }

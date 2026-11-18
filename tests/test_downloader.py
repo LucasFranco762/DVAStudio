@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import imageio_ffmpeg
 
-from src.dvaStudio.core.downloader import DownloadRequest, DownloadWorker
+from src.dvaStudio.core.downloader import DownloadRequest, DownloadWorker, MediaInfoWorker
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -19,6 +19,31 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 
 class DownloadWorkerTests(unittest.TestCase):
+    def test_original_name_lookup_does_not_download_media_and_sanitizes_filename(self):
+        worker = MediaInfoWorker("https://example.com/music")
+        names, failures, done = [], [], []
+        worker.title_ready.connect(names.append)
+        worker.failed.connect(failures.append)
+        worker.done.connect(lambda: done.append(True))
+        with patch('yt_dlp.YoutubeDL') as ydl_class:
+            ydl = ydl_class.return_value.__enter__.return_value
+            ydl.extract_info.return_value = {"title": 'Artista: Música / Ao vivo?'}
+            worker.run()
+            ydl.extract_info.assert_called_once_with(worker.url, download=False)
+            self.assertTrue(ydl_class.call_args.args[0]["skip_download"])
+        self.assertEqual(failures, [])
+        self.assertEqual(len(names), 1)
+        self.assertIn("Música", names[0])
+        self.assertFalse(any(character in names[0] for character in '<>:"/\\|?*'))
+        self.assertEqual(done, [True])
+
+    def test_cancelled_name_lookup_does_not_request_metadata(self):
+        worker = MediaInfoWorker("https://example.com/music")
+        worker.cancel()
+        with patch('yt_dlp.YoutubeDL') as ydl_class:
+            worker.run()
+            ydl_class.assert_not_called()
+
     def test_download_and_convert_to_playable_mp3(self):
         """Baixa por HTTP e converte com os binários reais, sem acessar sites."""
         with tempfile.TemporaryDirectory() as tmp:
