@@ -6,8 +6,10 @@ Versão desktop em Python/PyQt6 inspirada no app Android MusicVideoApp.
 
 - Abre o YouTube ou outro site de vídeo em um navegador integrado.
 - Detecta URLs de vídeo.
+- Permite voltar à página anterior pelo botão à esquerda da URL ou por Alt+Esquerda.
 - Permite baixar em três modos: vídeo + áudio, somente áudio ou somente vídeo.
 - Mostra progresso em tempo real.
+- Mantém o navegador ativo durante a escolha do destino, o download e a confirmação de conclusão.
 - Lista os arquivos baixados.
 - Abre a pasta de downloads ou reproduz o arquivo com o player padrão do sistema.
 

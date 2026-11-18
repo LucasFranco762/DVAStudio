@@ -4,8 +4,8 @@ import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, QThread, Qt, QUrl
-from PyQt6.QtGui import QAction, QCursor, QDesktopServices, QIcon, QPixmap
+from PyQt6.QtCore import QSettings, QSize, QThread, Qt, QUrl, pyqtSlot
+from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -29,11 +29,37 @@ from PyQt6.QtWidgets import (
 )
 
 try:
+    from PyQt6.QtWebEngineCore import QWebEnginePage
     from PyQt6.QtWebEngineWidgets import QWebEngineView
 except Exception:  # pragma: no cover
     QWebEngineView = None
 
 from ..core.downloader import DownloadRequest, DownloadWorker
+
+
+def _back_icon() -> QIcon:
+    """Seta de retorno curva, com traços arredondados e resolução dupla."""
+    icon = QIcon()
+    for mode, color in ((QIcon.Mode.Normal, "#C9F7FF"), (QIcon.Mode.Disabled, "#626980")):
+        pixmap = QPixmap(48, 48)
+        pixmap.setDevicePixelRatio(2)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(color), 1.9, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        path = QPainterPath()
+        path.moveTo(10, 5)
+        path.lineTo(6, 9)
+        path.lineTo(10, 13)
+        path.moveTo(6, 9)
+        path.lineTo(13, 9)
+        path.cubicTo(17, 9, 19, 11, 19, 15)
+        path.lineTo(19, 18)
+        painter.drawPath(path)
+        painter.end()
+        icon.addPixmap(pixmap, mode)
+    return icon
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +77,7 @@ class MainWindow(QMainWindow):
         self.download_dir = Path(self._settings.value("download_dir", default_dir))
         self._thread: QThread | None = None
         self._worker: DownloadWorker | None = None
+        self._save_dialog: QFileDialog | None = None
         self._build_ui()
         self._load_downloads()
 
@@ -154,6 +181,16 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(desc)
 
         row = QHBoxLayout()
+        self.btn_back = QPushButton()
+        self.btn_back.setObjectName("BackButton")
+        self.btn_back.setIcon(_back_icon())
+        self.btn_back.setIconSize(QSize(24, 24))
+        self.btn_back.setFixedSize(44, 44)
+        self.btn_back.setAccessibleName("Voltar")
+        self.btn_back.setToolTip("Voltar à página anterior (Alt+Esquerda)")
+        self.btn_back.setShortcut("Alt+Left")
+        self.btn_back.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_back.setEnabled(False)
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("Cole a URL do vídeo ou navegue pelo painel abaixo...")
         self.url_edit.returnPressed.connect(self._go_to_url)
@@ -170,6 +207,7 @@ class MainWindow(QMainWindow):
         download_btn.setObjectName("Primary")
         download_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         download_btn.clicked.connect(self._start_download)
+        row.addWidget(self.btn_back)
         row.addWidget(self.url_edit, 1)
         row.addWidget(go_btn)
         row.addWidget(self.mode_combo)
@@ -187,6 +225,11 @@ class MainWindow(QMainWindow):
 
         if QWebEngineView:
             self.web = QWebEngineView()
+            back_action = self.web.pageAction(QWebEnginePage.WebAction.Back)
+            if back_action is not None:
+                self.btn_back.clicked.connect(back_action.trigger)
+                back_action.changed.connect(lambda: self.btn_back.setEnabled(back_action.isEnabled()))
+                self.btn_back.setEnabled(back_action.isEnabled())
             self.web.setUrl(QUrl("https://m.youtube.com"))
             self.web.urlChanged.connect(lambda url: self.url_edit.setText(url.toString()))
             layout.addWidget(self.web, 1)
@@ -271,53 +314,77 @@ class MainWindow(QMainWindow):
     def _start_download(self) -> None:
         url = self.url_edit.text().strip()
         if not url.startswith(("http://", "https://")):
-            QMessageBox.warning(self, "URL inválida", "Cole ou abra uma URL válida antes de baixar.")
+            self._show_message(QMessageBox.Icon.Warning, "URL inválida", "Cole ou abra uma URL válida antes de baixar.")
             return
         if self._thread and self._thread.isRunning():
-            QMessageBox.information(self, "Download em andamento", "Aguarde o download atual terminar.")
+            self._show_message(QMessageBox.Icon.Information, "Download em andamento", "Aguarde o download atual terminar.")
+            return
+        if self._save_dialog is not None:
+            self._save_dialog.raise_()
+            self._save_dialog.activateWindow()
             return
         output_fmt = self.format_combo.currentData()
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Salvar arquivo como",
-            str(self.download_dir / f"download.{output_fmt}"),
-            f"*.{output_fmt}",
-        )
-        if not save_path:
-            return
-        save_path = Path(save_path)
-        save_dir = save_path.parent
-        filename_stem = save_path.stem
+        # Captura a solicitação antes de abrir o seletor. O usuário pode
+        # continuar navegando ou mudar as opções enquanto escolhe o destino.
         request = DownloadRequest(
             url=url,
             mode=self.mode_combo.currentData(),
-            output_dir=save_dir,
+            output_dir=self.download_dir,
             output_format=output_fmt,
-            output_filename=filename_stem,
         )
+        dialog = QFileDialog(self)
+        # O seletor nativo do Windows interrompe os timers do Qt. show()
+        # mantém o loop principal e o navegador ativos, sem um exec() aninhado.
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setWindowTitle("Salvar arquivo como")
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter(f"*.{output_fmt}")
+        dialog.setDefaultSuffix(output_fmt)
+        dialog.setDirectory(str(self.download_dir))
+        dialog.selectFile(f"download.{output_fmt}")
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.fileSelected.connect(lambda filename: self._download_selected_file(filename, request))
+        dialog.finished.connect(self._clear_save_dialog)
+        self._save_dialog = dialog
+        dialog.show()
+
+    @pyqtSlot(int)
+    def _clear_save_dialog(self, result: int) -> None:
+        self._save_dialog = None
+
+    def _download_selected_file(self, filename: str, request: DownloadRequest) -> None:
+        save_path = Path(filename)
+        request.output_dir = save_path.parent
+        request.output_filename = save_path.stem
         self._thread = QThread()
         self._worker = DownloadWorker(request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.failed.connect(self._on_failed)
+        self._worker.progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
+        self._worker.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
+        self._worker.failed.connect(self._on_failed, Qt.ConnectionType.QueuedConnection)
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.finished.connect(self._clear_worker)
         self.progress.setValue(0)
         self.status.setText("Iniciando...")
         self._thread.start()
 
+    @pyqtSlot()
     def _clear_worker(self) -> None:
         self._thread = None
         self._worker = None
 
+    @pyqtSlot(int, str)
     def _on_progress(self, value: int, text: str) -> None:
         self.progress.setValue(value)
         self.status.setText(text)
 
+    @pyqtSlot(str, str)
     def _on_finished(self, file_path: str, title: str) -> None:
         self.progress.setValue(100)
         self.status.setText(f"Concluído: {Path(file_path).name}")
@@ -330,6 +397,8 @@ class MainWindow(QMainWindow):
         else:
             kind = "Vídeo + Áudio"
         dlg = QDialog(self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
         dlg.setWindowTitle("Download concluído")
         dlg.setFixedWidth(380)
         dlg.setStyleSheet("QDialog { background: #0D1024; }")
@@ -357,11 +426,18 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(ok_btn)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
-        dlg.exec()
+        dlg.show()
 
+    def _show_message(self, icon: QMessageBox.Icon, title: str, message: str) -> None:
+        dialog = QMessageBox(icon, title, message, QMessageBox.StandardButton.Ok, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.show()
+
+    @pyqtSlot(str)
     def _on_failed(self, message: str) -> None:
         self.status.setText("Falha no download")
-        QMessageBox.critical(self, "Erro no download", message)
+        self._show_message(QMessageBox.Icon.Critical, "Erro no download", message)
 
     def _load_downloads(self) -> None:
         if not hasattr(self, "download_list"):

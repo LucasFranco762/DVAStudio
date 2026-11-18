@@ -3,6 +3,9 @@ APP_QSS = """
 QMainWindow { background: #070A16; }
 QMessageBox { background: #0D1024; }
 QMessageBox QLabel { color: #F7F8FF; }
+QFileDialog { background: #0D1024; }
+QFileDialog QTreeView, QFileDialog QListView { background: #0D1024; color: #F7F8FF; selection-background-color: #8F3DFF; selection-color: white; }
+QFileDialog QHeaderView::section { background: #1B2140; color: #F7F8FF; }
 QWidget#Root { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #070A16, stop:0.55 #0D1024, stop:1 #130B22); }
 QFrame#Sidebar { background: rgba(255,255,255,0.055); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; }
 QFrame#Card { background: rgba(255,255,255,0.075); border: 1px solid rgba(255,255,255,0.10); border-radius: 22px; }
@@ -12,6 +15,10 @@ QLabel#SectionTitle { font-size: 22px; font-weight: 800; }
 QPushButton { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); border-radius: 15px; padding: 11px 16px; font-weight: 700; }
 QPushButton:hover { background: rgba(255,255,255,0.14); border: 1px solid rgba(32,227,255,0.38); }
 QPushButton:pressed { background: rgba(32,227,255,0.16); }
+QPushButton#BackButton { background: rgba(32,227,255,0.07); border: 1px solid rgba(32,227,255,0.20); border-radius: 13px; padding: 0; }
+QPushButton#BackButton:hover { background: rgba(32,227,255,0.16); border-color: rgba(32,227,255,0.55); }
+QPushButton#BackButton:pressed { background: rgba(32,227,255,0.25); }
+QPushButton#BackButton:disabled { background: rgba(255,255,255,0.025); border-color: rgba(255,255,255,0.07); }
 QPushButton#Primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #20E3FF, stop:0.55 #8F3DFF, stop:1 #FF2FB3); color: white; border: none; }
 QPushButton#Primary:hover { opacity: 0.95; }
 QPushButton#NavButton { text-align: left; padding: 13px 18px; border-radius: 16px; background: transparent; border: none; color: #B7BDD1; }
