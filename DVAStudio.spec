@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all, collect_data_files
+import os
+from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
+
+runtime = Path(os.environ.get('DVASTUDIO_BUILD_RUNTIME', 'build/runtime')).resolve()
+for binary in ('node.exe', 'ffmpeg.exe'):
+    if not (runtime / binary).is_file():
+        raise RuntimeError('Use python Gerar_executavel.py para preparar os componentes da distribuição.')
 
 # ── PyQt6 (inclui WebEngine) ──────────────────────────────────────────────────
 qt_datas, qt_binaries, qt_hidden = collect_all('PyQt6')
 
 # ── yt-dlp ────────────────────────────────────────────────────────────────────
 ytdlp_datas, ytdlp_binaries, ytdlp_hidden = collect_all('yt_dlp')
+ejs_datas, ejs_binaries, ejs_hidden = collect_all('yt_dlp_ejs')
 
 # ── imageio-ffmpeg (inclui o binário ffmpeg) ──────────────────────────────────
 ffmpeg_datas, ffmpeg_binaries, ffmpeg_hidden = collect_all('imageio_ffmpeg')
@@ -13,13 +21,17 @@ ffmpeg_datas, ffmpeg_binaries, ffmpeg_hidden = collect_all('imageio_ffmpeg')
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=qt_binaries + ytdlp_binaries + ffmpeg_binaries,
+    binaries=qt_binaries + ytdlp_binaries + ejs_binaries + ffmpeg_binaries + [
+        (str(runtime / 'node.exe'), 'runtime'),
+        (str(runtime / 'ffmpeg.exe'), 'runtime'),
+    ],
     datas=[
         ('Icone.png', '.'),
+        ('Icone.ico', '.'),
         ('src/dvaStudio/assets/icon.png', 'src/dvaStudio/assets'),
-    ] + qt_datas + ytdlp_datas + ffmpeg_datas,
+    ] + [(str(p), 'runtime') for p in runtime.glob('*LICENSE.txt')] + qt_datas + ytdlp_datas + ejs_datas + ffmpeg_datas,
     hiddenimports=(
-        qt_hidden + ytdlp_hidden + ffmpeg_hidden + [
+        qt_hidden + ytdlp_hidden + ejs_hidden + ffmpeg_hidden + [
             # yt-dlp extractors e postprocessors
             'yt_dlp.extractor._extractors',
             'yt_dlp.extractor.youtube',
@@ -51,6 +63,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,       # onedir: binários ficam fora do .exe
+    contents_directory='.',      # dependências ao lado do executável
     name='DVAStudio',
     debug=False,
     bootloader_ignore_signals=False,

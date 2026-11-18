@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
@@ -12,6 +12,12 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 def _get_ffmpeg_dir() -> str:
     """Retorna um diretório com um executável chamado exatamente 'ffmpeg.exe',
     requisito do yt-dlp para reconhecer o binário."""
+    if getattr(sys, "frozen", False):
+        runtime = Path(sys._MEIPASS) / "runtime"
+        if not (runtime / "ffmpeg.exe").is_file():
+            raise RuntimeError("FFmpeg não encontrado. Copie a pasta completa do aplicativo.")
+        return str(runtime)
+
     import imageio_ffmpeg
 
     src = Path(imageio_ffmpeg.get_ffmpeg_exe())
@@ -26,6 +32,15 @@ def _get_ffmpeg_dir() -> str:
     return str(cache_dir)
 
 
+def _get_js_runtimes() -> dict:
+    if getattr(sys, "frozen", False):
+        node = Path(sys._MEIPASS) / "runtime" / "node.exe"
+        if not node.is_file():
+            raise RuntimeError("Node.js não encontrado. Copie a pasta completa do aplicativo.")
+        return {"node": {"path": str(node)}}
+    return {"deno": {}, "node": {}}
+
+
 @dataclass
 class DownloadRequest:
     url: str
@@ -33,6 +48,25 @@ class DownloadRequest:
     output_dir: Path
     output_format: str = "mp4"
     output_filename: str | None = None
+
+
+class _DownloadLogger:
+    """Preserva avisos do yt-dlp para o diagnóstico na interface sem console."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        if message not in self.warnings:
+            self.warnings.append(message)
+            self.warnings = self.warnings[-3:]
+
+    def error(self, message: str) -> None:
+        # O erro também será recebido pela exceção de extract_info.
+        pass
 
 
 class DownloadWorker(QObject):
@@ -81,6 +115,7 @@ class DownloadWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
+        logger = _DownloadLogger()
         try:
             import yt_dlp
 
@@ -88,16 +123,21 @@ class DownloadWorker(QObject):
 
             self.request.output_dir.mkdir(parents=True, exist_ok=True)
             if self.request.output_filename:
-                output_template = str(self.request.output_dir / f"{self.request.output_filename}.%(ext)s")
+                filename = self.request.output_filename.replace("%", "%%")
+                output_template = str(self.request.output_dir).replace("%", "%%") + os.sep + f"{filename}.%(ext)s"
             else:
-                output_template = str(self.request.output_dir / "%(title).180s [%(id)s].%(ext)s")
+                output_template = str(self.request.output_dir).replace("%", "%%") + os.sep + "%(title).180s [%(id)s].%(ext)s"
             merge_fmt = self.request.output_format if self.request.mode != "audio" else None
             options = {
                 "format": self._format_selector(),
                 "outtmpl": output_template,
                 "noplaylist": True,
                 "quiet": True,
-                "no_warnings": True,
+                "logger": logger,
+                "noprogress": True,
+                # yt-dlp habilita apenas Deno por padrão. Aceita também Node
+                # quando instalado, necessário para os desafios do YouTube.
+                "js_runtimes": _get_js_runtimes(),
                 "progress_hooks": [self._hook],
                 "postprocessors": self._postprocessors(),
                 "ffmpeg_location": ffmpeg_dir,
@@ -111,7 +151,12 @@ class DownloadWorker(QObject):
                 file_path = ydl.prepare_filename(info)
                 ext = self.request.output_format
                 file_path = str(Path(file_path).with_suffix(f".{ext}"))
+                if not Path(file_path).is_file():
+                    raise RuntimeError(f"O arquivo final não foi encontrado: {file_path}")
             self.progress.emit(100, "Concluído")
             self.finished.emit(file_path, title)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            message = str(exc)
+            if logger.warnings:
+                message += "\n\nAvisos do download:\n" + "\n".join(logger.warnings)
+            self.failed.emit(message)

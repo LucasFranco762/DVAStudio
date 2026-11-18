@@ -1,6 +1,8 @@
 APP_QSS = """
 * { font-family: 'Segoe UI', 'Inter', Arial; color: #F7F8FF; }
 QMainWindow { background: #070A16; }
+QMessageBox { background: #0D1024; }
+QMessageBox QLabel { color: #F7F8FF; }
 QWidget#Root { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #070A16, stop:0.55 #0D1024, stop:1 #130B22); }
 QFrame#Sidebar { background: rgba(255,255,255,0.055); border: 1px solid rgba(255,255,255,0.08); border-radius: 24px; }
 QFrame#Card { background: rgba(255,255,255,0.075); border: 1px solid rgba(255,255,255,0.10); border-radius: 22px; }
